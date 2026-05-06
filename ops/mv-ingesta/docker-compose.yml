@@ -1,0 +1,40 @@
+name: urate-ingesta
+
+# MV Ingesta: 3 contenedores ETL que extraen datos de las BDs y los suben a S3.
+# Correr una vez (o programar con cron). No son servicios persistentes.
+# Editar .env de cada contenedor antes de correr.
+
+networks:
+  ingesta_net:
+    driver: bridge
+
+services:
+  ingest-users:
+    build:
+      context: ../../ms-analytics/containers/ingest-users
+    image: urate/ingest-users:latest
+    container_name: utec_ingest_users
+    networks: [ingesta_net]
+    restart: "no"
+    env_file:
+      - ../../ms-analytics/containers/ingest-users/.env
+
+  ingest-content:
+    build:
+      context: ../../ms-analytics/containers/ingest-content
+    image: urate/ingest-content:latest
+    container_name: utec_ingest_content
+    networks: [ingesta_net]
+    restart: "no"
+    env_file:
+      - ../../ms-analytics/containers/ingest-content/.env
+
+  ingest-reviews:
+    build:
+      context: ../../ms-analytics/containers/ingest-reviews
+    image: urate/ingest-reviews:latest
+    container_name: utec_ingest_reviews
+    networks: [ingesta_net]
+    restart: "no"
+    env_file:
+      - ../../ms-analytics/containers/ingest-reviews/.env

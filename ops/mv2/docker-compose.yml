@@ -1,0 +1,85 @@
+name: urate-mv2
+
+# MV2: MS3 (ms-reviews) + MS4 (ms-content) + MS5 (ms-analytics)
+# Editar .env con DB_HOST, MV1_HOST y credenciales AWS.
+
+networks:
+  mv2_net:
+    driver: bridge
+
+services:
+  ms-reviews:
+    build:
+      context: ../../ms-reviews
+    image: ms-reviews:latest
+    container_name: utec_ms_reviews
+    restart: unless-stopped
+    networks: [mv2_net]
+    ports:
+      - "3003:3003"
+    environment:
+      MONGO_URL: mongodb://${DB_HOST}:27017
+      MONGO_DB:  reviews_db
+      MS1_URL:   http://${MV1_HOST}:3001
+      MS2_URL:   http://${MV1_HOST}:3002
+      PORT:      3003
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3003/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  ms-content:
+    build:
+      context: ../../ms-content
+    image: ms-content:latest
+    container_name: utec_ms_content
+    restart: unless-stopped
+    networks: [mv2_net]
+    ports:
+      - "3004:3004"
+    environment:
+      PORT:    3004
+      MS1_URL: http://${MV1_HOST}:3001
+      MS2_URL: http://${MV1_HOST}:3002
+      MS3_URL: http://ms-reviews:3003
+    depends_on:
+      ms-reviews:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3004/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  ms-analytics:
+    build:
+      context: ../../ms-analytics
+    image: ms-analytics:latest
+    container_name: utec_ms_analytics
+    restart: unless-stopped
+    networks: [mv2_net]
+    ports:
+      - "3005:3005"
+    environment:
+      PORT:                  3005
+      MS1_URL:               http://${MV1_HOST}:3001
+      MS2_URL:               http://${MV1_HOST}:3002
+      MS3_URL:               http://ms-reviews:3003
+      S3_BUCKET:             ${S3_BUCKET:-utecrate-analytics-data}
+      AWS_REGION:            ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID:     ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      ATHENA_DATABASE:       ${ATHENA_DATABASE:-utecrate}
+      ATHENA_OUTPUT:         s3://${S3_BUCKET:-utecrate-analytics-data}/athena-results/
+    depends_on:
+      ms-reviews:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3005/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

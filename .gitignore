@@ -1,0 +1,58 @@
+# ── Node.js ───────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# ── Java / Maven ──────────────────────────────────────────────
+target/
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# ── Entornos ──────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.production
+
+# ── IDEs ──────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ── macOS / Linux ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Firebase ──────────────────────────────────────────────────
+*-firebase-adminsdk-*.json
+firebase-service-account.json
+
+# ── Docker ────────────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+logs/

@@ -1,0 +1,161 @@
+name: urate
+
+networks:
+  utec_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mysql_data:
+  mongo_data:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: utec_auth_db
+    restart: unless-stopped
+    networks: [utec_net]
+    environment:
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB:       auth_db
+    ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8.0
+    container_name: utec_academic_db
+    restart: unless-stopped
+    networks: [utec_net]
+    environment:
+      MYSQL_ROOT_PASSWORD: root_utec_2025
+      MYSQL_DATABASE:      academic_db
+      MYSQL_USER:          utec_user
+      MYSQL_PASSWORD:      utec_pass_2025
+    ports: ["3306:3306"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./ms-academic/mysql-init:/docker-entrypoint-initdb.d:ro
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uutec_user", "-putec_pass_2025"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  mongo:
+    image: mongo:7
+    container_name: utec_reviews_db
+    restart: unless-stopped
+    networks: [utec_net]
+    environment:
+      MONGO_INITDB_DATABASE: reviews_db
+    ports: ["27017:27017"]
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  ms-users:
+    build: ./ms-users
+    container_name: utec_ms_users
+    restart: unless-stopped
+    networks: [utec_net]
+    ports: ["3001:3001"]
+    environment:
+      DATABASE_URL:       postgresql://postgres:postgres@postgres:5432/auth_db
+      JWT_SECRET:         utec_rate_secret_2025
+      JWT_REFRESH_SECRET: utec_rate_refresh_2025
+      PORT:               3001
+      NODE_ENV:           development
+      CORS_ORIGIN:        "*"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ms-academic:
+    build: ./ms-academic
+    container_name: utec_ms_academic
+    restart: unless-stopped
+    networks: [utec_net]
+    ports: ["3002:3002"]
+    environment:
+      DB_URL:   jdbc:mysql://mysql:3306/academic_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=UTF-8
+      DB_USER:  utec_user
+      DB_PASS:  utec_pass_2025
+      MS1_URL:  http://ms-users:3001
+      MS1_MOCK: "false"
+      SERVER_PORT: 3002
+      SPRING_PROFILES_ACTIVE: dev
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  ms-reviews:
+    build: ./ms-reviews
+    container_name: utec_ms_reviews
+    restart: unless-stopped
+    networks: [utec_net]
+    ports: ["3003:3003"]
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DB:  reviews_db
+      MS1_URL:   http://ms-users:3001
+      MS2_URL:   http://ms-academic:3002
+    depends_on:
+      mongo:
+        condition: service_healthy
+      ms-users:
+        condition: service_started
+      ms-academic:
+        condition: service_started
+
+  ms-content:
+    build: ./ms-content
+    container_name: utec_ms_content
+    restart: unless-stopped
+    networks: [utec_net]
+    ports: ["3004:3004"]
+    environment:
+      PORT:    3004
+      MS1_URL: http://ms-users:3001
+      MS2_URL: http://ms-academic:3002
+      MS3_URL: http://ms-reviews:3003
+    depends_on:
+      - ms-users
+      - ms-academic
+      - ms-reviews
+
+  ms-analytics:
+    build: ./ms-analytics
+    container_name: utec_ms_analytics
+    restart: unless-stopped
+    networks: [utec_net]
+    ports: ["3005:3005"]
+    environment:
+      MS1_URL:           http://ms-users:3001
+      MS2_URL:           http://ms-academic:3002
+      MS3_URL:           http://ms-reviews:3003
+      S3_BUCKET:         ${S3_BUCKET:-utecrate-analytics-data}
+      AWS_REGION:        ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      ATHENA_DATABASE:   ${ATHENA_DATABASE:-utecrate}
+      ATHENA_OUTPUT:     ${ATHENA_OUTPUT:-s3://utecrate-analytics-data/athena-results/}
+    depends_on:
+      - ms-users
+      - ms-academic
+      - ms-reviews

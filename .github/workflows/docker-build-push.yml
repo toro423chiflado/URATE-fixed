@@ -1,0 +1,178 @@
+name: Build & Push to Docker Hub
+
+# Se dispara en cada push a main que toque algún microservicio
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ms-users/**'
+      - 'ms-academic/**'
+      - 'ms-reviews/**'
+      - 'ms-content/**'
+      - 'ms-analytics/**'
+  # También se puede disparar manualmente desde la pestaña Actions
+  workflow_dispatch:
+
+env:
+  # Cambia esto por tu usuario de Docker Hub (ej: aracely25)
+  DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+
+jobs:
+  # ── MS1: ms-users (Node.js) ───────────────────────────────────
+  build-ms-users:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push ms-users
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ms-users
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/urate-ms-users:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/urate-ms-users:${{ github.sha }}
+
+  # ── MS2: ms-academic (Java Spring Boot) ───────────────────────
+  # Nota: tarda ~8 min porque Maven compila dentro del contenedor.
+  # GitHub Actions tiene cache de capas Docker para acelerar builds siguientes.
+  build-ms-academic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Cache de capas Docker para acelerar rebuilds de Maven
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache-academic
+          key: ${{ runner.os }}-buildx-academic-${{ hashFiles('ms-academic/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-academic-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push ms-academic
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ms-academic
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/urate-ms-academic:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/urate-ms-academic:${{ github.sha }}
+          cache-from: type=local,src=/tmp/.buildx-cache-academic
+          cache-to: type=local,dest=/tmp/.buildx-cache-academic-new,mode=max
+
+      - name: Rotate cache
+        run: |
+          rm -rf /tmp/.buildx-cache-academic
+          mv /tmp/.buildx-cache-academic-new /tmp/.buildx-cache-academic
+
+  # ── MS3: ms-reviews (Python FastAPI) ──────────────────────────
+  build-ms-reviews:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push ms-reviews
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ms-reviews
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/urate-ms-reviews:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/urate-ms-reviews:${{ github.sha }}
+
+  # ── MS4: ms-content (Python FastAPI) ──────────────────────────
+  build-ms-content:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push ms-content
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ms-content
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/urate-ms-content:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/urate-ms-content:${{ github.sha }}
+
+  # ── MS5: ms-analytics (Python FastAPI) ────────────────────────
+  build-ms-analytics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push ms-analytics
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ms-analytics
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/urate-ms-analytics:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/urate-ms-analytics:${{ github.sha }}
+
+  # ── Contenedores de ingesta ────────────────────────────────────
+  build-ingesta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build & Push ingest-users
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ms-analytics/containers/ingest-users
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/urate-ingest-users:latest
+
+      - name: Build & Push ingest-content
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ms-analytics/containers/ingest-content
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/urate-ingest-content:latest
+
+      - name: Build & Push ingest-reviews
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ms-analytics/containers/ingest-reviews
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/urate-ingest-reviews:latest

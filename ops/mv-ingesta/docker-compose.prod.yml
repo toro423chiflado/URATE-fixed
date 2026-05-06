@@ -1,0 +1,65 @@
+name: urate-ingesta
+
+# ================================================================
+# MV INGESTA — 3 contenedores ETL que extraen de las BDs y suben a S3.
+# Usa imágenes pre-construidas desde Docker Hub.
+# NO necesita código fuente ni build.
+#
+# Variables: editar el .env de cada contenedor en la sección env_file.
+# Uso:
+#   docker compose -f docker-compose.prod.yml --env-file .env up
+#   (los 3 contenedores terminan solos cuando suben los datos a S3)
+# ================================================================
+
+networks:
+  ingesta_net:
+    driver: bridge
+
+services:
+
+  ingest-users:
+    image: ${DOCKERHUB_USERNAME}/urate-ingest-users:latest
+    container_name: utec_ingest_users
+    networks: [ingesta_net]
+    restart: "no"
+    environment:
+      SERVICE_NAME:   users
+      SOURCE_DB_URL:  postgresql+psycopg2://postgres:postgres@${DB_HOST}:5432/auth_db
+      TABLES:         usuarios
+      S3_BUCKET:      ${S3_BUCKET}
+      AWS_REGION:     ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID:     ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      S3_PREFIX:      raw
+      OUTPUT_FORMAT:  csv
+
+  ingest-content:
+    image: ${DOCKERHUB_USERNAME}/urate-ingest-content:latest
+    container_name: utec_ingest_content
+    networks: [ingesta_net]
+    restart: "no"
+    environment:
+      SERVICE_NAME:   content
+      SOURCE_DB_URL:  mysql+pymysql://utec_user:utec_pass_2025@${DB_HOST}:3306/academic_db
+      TABLES:         carrera,curso,profesor_curso
+      S3_BUCKET:      ${S3_BUCKET}
+      AWS_REGION:     ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID:     ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      S3_PREFIX:      raw
+      OUTPUT_FORMAT:  csv
+
+  ingest-reviews:
+    image: ${DOCKERHUB_USERNAME}/urate-ingest-reviews:latest
+    container_name: utec_ingest_reviews
+    networks: [ingesta_net]
+    restart: "no"
+    environment:
+      SOURCE_DB_URL:  mongodb://${DB_HOST}:27017
+      MONGO_DB:       reviews_db
+      COLLECTION:     calificaciones
+      S3_BUCKET:      ${S3_BUCKET}
+      AWS_REGION:     ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID:     ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      S3_PREFIX:      raw

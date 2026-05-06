@@ -1,0 +1,67 @@
+name: urate-mv1
+
+# ================================================================
+# MV1 — MS1 (ms-users) + MS2 (ms-academic)
+# Usa imágenes pre-construidas desde Docker Hub.
+# NO necesita código fuente ni Docker build en esta MV.
+#
+# Antes de usar:
+#   cp .env.example .env
+#   nano .env   → poner DB_HOST, DOCKERHUB_USERNAME
+#
+# Uso:
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d
+# ================================================================
+
+networks:
+  mv1_net:
+    driver: bridge
+
+services:
+
+  ms-users:
+    image: ${DOCKERHUB_USERNAME}/urate-ms-users:latest
+    container_name: utec_ms_users
+    restart: unless-stopped
+    networks: [mv1_net]
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL:       postgresql://postgres:postgres@${DB_HOST}:5432/auth_db
+      JWT_SECRET:         ${JWT_SECRET:-utec_rate_secret_2025}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-utec_rate_refresh_2025}
+      PORT:               3001
+      NODE_ENV:           production
+      CORS_ORIGIN:        "*"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  ms-academic:
+    image: ${DOCKERHUB_USERNAME}/urate-ms-academic:latest
+    container_name: utec_ms_academic
+    restart: unless-stopped
+    networks: [mv1_net]
+    ports:
+      - "3002:3002"
+    environment:
+      DB_URL:             jdbc:mysql://${DB_HOST}:3306/academic_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=UTF-8
+      DB_USER:            utec_user
+      DB_PASS:            utec_pass_2025
+      MS1_URL:            http://ms-users:3001
+      MS1_MOCK:           "false"
+      MS1_JWT_SECRET:     ${JWT_SECRET:-utec_rate_secret_2025}
+      SERVER_PORT:        3002
+      SPRING_PROFILES_ACTIVE: prod
+    depends_on:
+      ms-users:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3002/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
