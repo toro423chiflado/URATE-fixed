@@ -1,181 +1,102 @@
 name: Build & Push to Docker Hub
 
-# Se dispara en cada push a main que toque algún microservicio,
-# o manualmente desde la pestaña Actions de GitHub.
 on:
   push:
     branches: [main]
-    paths:
-      - 'ms-users/**'
-      - 'ms-academic/**'
-      - 'ms-reviews/**'
-      - 'ms-content/**'
-      - 'ms-analytics/**'
   workflow_dispatch:
 
-env:
-  DOCKERHUB_USER: ssilvar2005
-
 jobs:
-
-  # ── MS1: ms-users (Node.js + Prisma) ─────────────────────────
   build-ms-users:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Login Docker Hub
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ssilvar2005
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build & Push ms-users
-        uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v5
         with:
           context: ./ms-users
           push: true
-          tags: |
-            ssilvar2005/urate-ms-users:latest
-            ssilvar2005/urate-ms-users:${{ github.sha }}
+          tags: ssilvar2005/urate-ms-users:latest
 
-  # ── MS2: ms-academic (Java Spring Boot + MySQL) ───────────────
   build-ms-academic:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Login Docker Hub
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ssilvar2005
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Cache capas Maven
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache-academic
-          key: ${{ runner.os }}-buildx-academic-${{ hashFiles('ms-academic/pom.xml') }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-academic-
-
-      - name: Build & Push ms-academic
-        uses: docker/build-push-action@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
         with:
           context: ./ms-academic
           push: true
-          tags: |
-            ssilvar2005/urate-ms-academic:latest
-            ssilvar2005/urate-ms-academic:${{ github.sha }}
-          cache-from: type=local,src=/tmp/.buildx-cache-academic
-          cache-to: type=local,dest=/tmp/.buildx-cache-academic-new,mode=max
+          tags: ssilvar2005/urate-ms-academic:latest
 
-      - name: Rotar cache
-        run: |
-          rm -rf /tmp/.buildx-cache-academic
-          mv /tmp/.buildx-cache-academic-new /tmp/.buildx-cache-academic
-
-  # ── MS3: ms-reviews (Python FastAPI + MongoDB) ────────────────
   build-ms-reviews:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Login Docker Hub
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ssilvar2005
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build & Push ms-reviews
-        uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v5
         with:
           context: ./ms-reviews
           push: true
-          tags: |
-            ssilvar2005/urate-ms-reviews:latest
-            ssilvar2005/urate-ms-reviews:${{ github.sha }}
+          tags: ssilvar2005/urate-ms-reviews:latest
 
-  # ── MS4: ms-content (Python FastAPI, sin BD) ─────────────────
   build-ms-content:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Login Docker Hub
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ssilvar2005
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build & Push ms-content
-        uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v5
         with:
           context: ./ms-content
           push: true
-          tags: |
-            ssilvar2005/urate-ms-content:latest
-            ssilvar2005/urate-ms-content:${{ github.sha }}
+          tags: ssilvar2005/urate-ms-content:latest
 
-  # ── MS5: ms-analytics (Python FastAPI + S3/Athena) ───────────
   build-ms-analytics:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Login Docker Hub
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ssilvar2005
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build & Push ms-analytics
-        uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v5
         with:
           context: ./ms-analytics
           push: true
-          tags: |
-            ssilvar2005/urate-ms-analytics:latest
-            ssilvar2005/urate-ms-analytics:${{ github.sha }}
+          tags: ssilvar2005/urate-ms-analytics:latest
 
-  # ── Contenedores de ingesta (3 ETL para S3) ───────────────────
   build-ingesta:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Login Docker Hub
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ssilvar2005
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build & Push ingest-users
-        uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v5
         with:
           context: ./ms-analytics/containers/ingest-users
           push: true
-          tags: |
-            ssilvar2005/urate-ingest-users:latest
-            ssilvar2005/urate-ingest-users:${{ github.sha }}
-
-      - name: Build & Push ingest-content
-        uses: docker/build-push-action@v5
+          tags: ssilvar2005/urate-ingest-users:latest
+      - uses: docker/build-push-action@v5
         with:
           context: ./ms-analytics/containers/ingest-content
           push: true
-          tags: |
-            ssilvar2005/urate-ingest-content:latest
-            ssilvar2005/urate-ingest-content:${{ github.sha }}
-
-      - name: Build & Push ingest-reviews
-        uses: docker/build-push-action@v5
+          tags: ssilvar2005/urate-ingest-content:latest
+      - uses: docker/build-push-action@v5
         with:
           context: ./ms-analytics/containers/ingest-reviews
           push: true
-          tags: |
-            ssilvar2005/urate-ingest-reviews:latest
-            ssilvar2005/urate-ingest-reviews:${{ github.sha }}
+          tags: ssilvar2005/urate-ingest-reviews:latest
