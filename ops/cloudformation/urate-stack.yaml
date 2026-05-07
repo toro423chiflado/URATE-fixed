@@ -417,7 +417,7 @@ Resources:
 
           # Clonar repo y levantar BDs
           cd /home/ubuntu
-          git clone https://github.com/TU_ORG/URATE.git app
+          git clone https://github.com/toro423chiflado/URATE.git app
           cd app
 
           # Copiar mysql-init al directorio de ops/mv-database
@@ -460,7 +460,7 @@ Resources:
           DB_HOST="${MVDB.PrivateIp}"
 
           cd /home/ubuntu
-          git clone https://github.com/TU_ORG/URATE.git app
+          git clone https://github.com/toro423chiflado/URATE.git app
           cd app/ops/mv1
 
           cp .env.prod.example .env
@@ -506,7 +506,7 @@ Resources:
           MV1_HOST="${MV1.PrivateIp}"
 
           cd /home/ubuntu
-          git clone https://github.com/TU_ORG/URATE.git app
+          git clone https://github.com/toro423chiflado/URATE.git app
           cd app/ops/mv2
 
           cp .env.prod.example .env
@@ -554,7 +554,7 @@ Resources:
           DB_HOST="${MVDB.PrivateIp}"
 
           cd /home/ubuntu
-          git clone https://github.com/TU_ORG/URATE.git app
+          git clone https://github.com/toro423chiflado/URATE.git app
           cd app/ops/mv-ingesta
 
           cp .env.prod.example .env
