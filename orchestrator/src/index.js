@@ -40,7 +40,6 @@ app.post('/orchestrator/action', async (req, res) => {
   const token = authHeader.split(' ')[1];
 
   try {
-    // 1. Validate JWT (Signature, Issuer, Audience, Expiry)
     const claims = await validateJwt(token);
     const userId = claims.sub || 'unknown';
 
