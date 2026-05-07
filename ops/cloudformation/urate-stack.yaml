@@ -1,0 +1,982 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  UTECRate — Infraestructura completa (CS2032)
+  VPC + Subredes + Security Groups + 4 EC2 + ALB + 5 Target Groups +
+  Listener Rules + API Gateway HTTP + VPC Link + S3 + Glue DB
+
+# ================================================================
+# PARÁMETROS — completar antes de ejecutar el stack
+# ================================================================
+Parameters:
+
+  ProjectName:
+    Type: String
+    Default: urate
+    Description: Prefijo para nombrar todos los recursos
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: "Key Pair existente en AWS para SSH (crear en EC2 > Key Pairs)"
+
+  DockerHubUsername:
+    Type: String
+    Description: "Tu usuario de Docker Hub (ej: aracely25)"
+
+  JwtSecret:
+    Type: String
+    Default: utec_rate_secret_2025
+    NoEcho: true
+    Description: Secreto JWT compartido entre MS1 y MS2
+
+  JwtRefreshSecret:
+    Type: String
+    Default: utec_rate_refresh_2025
+    NoEcho: true
+
+  AwsAccessKeyId:
+    Type: String
+    NoEcho: true
+    Description: AWS Access Key ID para S3 y Athena
+
+  AwsSecretKey:
+    Type: String
+    NoEcho: true
+    Description: AWS Secret Access Key para S3 y Athena
+
+  S3BucketName:
+    Type: String
+    Default: utecrate-analytics-data
+    Description: Nombre del bucket S3 para analytics (debe ser único globalmente)
+
+  AthenaDatabase:
+    Type: String
+    Default: utecrate
+
+  InstanceTypeDb:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t2.micro, t2.small, t3.micro, t3.small, t3.medium]
+    Description: Tipo de instancia para MV Base de Datos
+
+  InstanceTypeApp:
+    Type: String
+    Default: t3.small
+    AllowedValues: [t2.micro, t2.small, t3.micro, t3.small, t3.medium]
+    Description: Tipo de instancia para MV1, MV2 e Ingesta
+
+# ================================================================
+# MAPPINGS — AMI de Ubuntu 24.04 por región
+# ================================================================
+Mappings:
+  AmiByRegion:
+    us-east-1:
+      Ubuntu2404: ami-0e86e20dae9224db8
+    us-east-2:
+      Ubuntu2404: ami-05fb0b8c1424f266b
+    us-west-2:
+      Ubuntu2404: ami-0aff18ec83b712f05
+    eu-west-1:
+      Ubuntu2404: ami-0b9b1e6b83e4f8b4e
+
+# ================================================================
+# RECURSOS
+# ================================================================
+Resources:
+
+  # ──────────────────────────────────────────────────────────────
+  # 1. VPC Y RED
+  # ──────────────────────────────────────────────────────────────
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-vpc"
+
+  SubnetPublic:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-subnet-public"
+
+  SubnetPrivate:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-subnet-private"
+
+  # Subred extra en AZ distinta — requerida por el ALB (mínimo 2 AZs)
+  SubnetPublic2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-subnet-public-2"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-igw"
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  EIPNat:
+    Type: AWS::EC2::EIP
+    DependsOn: IGWAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EIPNat.AllocationId
+      SubnetId: !Ref SubnetPublic
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-nat"
+
+  RouteTablePublic:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-rt-public"
+
+  RoutePublicInternet:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref RouteTablePublic
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  AssocPublic:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetPublic
+      RouteTableId: !Ref RouteTablePublic
+
+  AssocPublic2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetPublic2
+      RouteTableId: !Ref RouteTablePublic
+
+  RouteTablePrivate:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-rt-private"
+
+  RoutePrivateNat:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTablePrivate
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  AssocPrivate:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SubnetPrivate
+      RouteTableId: !Ref RouteTablePrivate
+
+  # ──────────────────────────────────────────────────────────────
+  # 2. SECURITY GROUPS
+  # ──────────────────────────────────────────────────────────────
+
+  SGALB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-sg-alb"
+      GroupDescription: ALB interno — recibe del API Gateway VPC Link
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 10.0.0.0/16
+          Description: HTTP desde VPC (API Gateway VPC Link)
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-sg-alb"
+
+  SGMV1:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-sg-mv1"
+      GroupDescription: MV1 — ms-users:3001 y ms-academic:3002
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3001
+          ToPort: 3001
+          SourceSecurityGroupId: !Ref SGALB
+          Description: ms-users desde ALB
+        - IpProtocol: tcp
+          FromPort: 3002
+          ToPort: 3002
+          SourceSecurityGroupId: !Ref SGALB
+          Description: ms-academic desde ALB
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-sg-mv1"
+
+  SGMV2:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-sg-mv2"
+      GroupDescription: MV2 — ms-reviews:3003, ms-content:3004, ms-analytics:3005
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3003
+          ToPort: 3003
+          SourceSecurityGroupId: !Ref SGALB
+          Description: ms-reviews desde ALB
+        - IpProtocol: tcp
+          FromPort: 3004
+          ToPort: 3004
+          SourceSecurityGroupId: !Ref SGALB
+          Description: ms-content desde ALB
+        - IpProtocol: tcp
+          FromPort: 3005
+          ToPort: 3005
+          SourceSecurityGroupId: !Ref SGALB
+          Description: ms-analytics desde ALB
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-sg-mv2"
+
+  SGDB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-sg-db"
+      GroupDescription: MV DB — PostgreSQL 5432, MySQL 3306, MongoDB 27017
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # PostgreSQL: solo MV1
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref SGMV1
+          Description: PostgreSQL desde MV1
+        # MySQL: solo MV1
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref SGMV1
+          Description: MySQL desde MV1
+        # MongoDB: solo MV2
+        - IpProtocol: tcp
+          FromPort: 27017
+          ToPort: 27017
+          SourceSecurityGroupId: !Ref SGMV2
+          Description: MongoDB desde MV2
+        # PostgreSQL + MySQL + MongoDB: desde Ingesta
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref SGIngesta
+          Description: PostgreSQL desde Ingesta
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref SGIngesta
+          Description: MySQL desde Ingesta
+        - IpProtocol: tcp
+          FromPort: 27017
+          ToPort: 27017
+          SourceSecurityGroupId: !Ref SGIngesta
+          Description: MongoDB desde Ingesta
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-sg-db"
+
+  # MV2 → MV1 (para validar JWT)
+  SGMV1IngressFromMV2Port3001:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SGMV1
+      IpProtocol: tcp
+      FromPort: 3001
+      ToPort: 3001
+      SourceSecurityGroupId: !Ref SGMV2
+      Description: ms-users desde MV2 (validación JWT)
+
+  SGMV1IngressFromMV2Port3002:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SGMV1
+      IpProtocol: tcp
+      FromPort: 3002
+      ToPort: 3002
+      SourceSecurityGroupId: !Ref SGMV2
+      Description: ms-academic desde MV2 (ms-content, ms-analytics)
+
+  SGIngesta:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${ProjectName}-sg-ingesta"
+      GroupDescription: MV Ingesta — solo sale a BDs y S3
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-sg-ingesta"
+
+  # ──────────────────────────────────────────────────────────────
+  # 3. INSTANCIAS EC2
+  # ──────────────────────────────────────────────────────────────
+
+  # ── MV Base de Datos ─────────────────────────────────────────
+  MVDB:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !FindInMap [AmiByRegion, !Ref "AWS::Region", Ubuntu2404]
+      InstanceType: !Ref InstanceTypeDb
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref SubnetPrivate
+      SecurityGroupIds:
+        - !Ref SGDB
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          apt-get update -y
+          apt-get install -y docker.io docker-compose-plugin git unzip
+          usermod -aG docker ubuntu
+          systemctl enable docker
+          systemctl start docker
+
+          # Clonar repo y levantar BDs
+          cd /home/ubuntu
+          git clone https://github.com/TU_ORG/URATE.git app
+          cd app
+
+          # Copiar mysql-init al directorio de ops/mv-database
+          cp -r ms-academic/mysql-init ops/mv-database/
+
+          cd ops/mv-database
+          docker compose -f docker-compose.prod.yml up -d
+
+          echo "✅ MV-DB lista" >> /home/ubuntu/deploy.log
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-mv-db"
+
+  # ── MV1 (MS1 + MS2) ──────────────────────────────────────────
+  MV1:
+    Type: AWS::EC2::Instance
+    DependsOn: MVDB
+    Properties:
+      ImageId: !FindInMap [AmiByRegion, !Ref "AWS::Region", Ubuntu2404]
+      InstanceType: !Ref InstanceTypeApp
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref SubnetPrivate
+      SecurityGroupIds:
+        - !Ref SGMV1
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          apt-get update -y
+          apt-get install -y docker.io docker-compose-plugin git unzip
+          usermod -aG docker ubuntu
+          systemctl enable docker
+          systemctl start docker
+
+          DB_HOST="${MVDB.PrivateIp}"
+
+          cd /home/ubuntu
+          git clone https://github.com/TU_ORG/URATE.git app
+          cd app/ops/mv1
+
+          cp .env.prod.example .env
+          sed -i "s/DB_HOST=.*/DB_HOST=${!DB_HOST}/" .env
+          sed -i "s/DOCKERHUB_USERNAME=.*/DOCKERHUB_USERNAME=${DockerHubUsername}/" .env
+          sed -i "s/JWT_SECRET=.*/JWT_SECRET=${JwtSecret}/" .env
+          sed -i "s/JWT_REFRESH_SECRET=.*/JWT_REFRESH_SECRET=${JwtRefreshSecret}/" .env
+
+          docker compose -f docker-compose.prod.yml --env-file .env up -d
+
+          echo "✅ MV1 lista — DB_HOST=${!DB_HOST}" >> /home/ubuntu/deploy.log
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-mv1"
+
+  # ── MV2 (MS3 + MS4 + MS5) ────────────────────────────────────
+  MV2:
+    Type: AWS::EC2::Instance
+    DependsOn: MV1
+    Properties:
+      ImageId: !FindInMap [AmiByRegion, !Ref "AWS::Region", Ubuntu2404]
+      InstanceType: !Ref InstanceTypeApp
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref SubnetPrivate
+      SecurityGroupIds:
+        - !Ref SGMV2
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          apt-get update -y
+          apt-get install -y docker.io docker-compose-plugin git unzip
+          usermod -aG docker ubuntu
+          systemctl enable docker
+          systemctl start docker
+
+          DB_HOST="${MVDB.PrivateIp}"
+          MV1_HOST="${MV1.PrivateIp}"
+
+          cd /home/ubuntu
+          git clone https://github.com/TU_ORG/URATE.git app
+          cd app/ops/mv2
+
+          cp .env.prod.example .env
+          sed -i "s/DB_HOST=.*/DB_HOST=${!DB_HOST}/" .env
+          sed -i "s/MV1_HOST=.*/MV1_HOST=${!MV1_HOST}/" .env
+          sed -i "s/DOCKERHUB_USERNAME=.*/DOCKERHUB_USERNAME=${DockerHubUsername}/" .env
+          sed -i "s/AWS_ACCESS_KEY_ID=.*/AWS_ACCESS_KEY_ID=${AwsAccessKeyId}/" .env
+          sed -i "s|AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=${AwsSecretKey}|" .env
+          sed -i "s/S3_BUCKET=.*/S3_BUCKET=${S3BucketName}/" .env
+          sed -i "s/ATHENA_DATABASE=.*/ATHENA_DATABASE=${AthenaDatabase}/" .env
+
+          docker compose -f docker-compose.prod.yml --env-file .env up -d
+
+          echo "✅ MV2 lista — MV1=${!MV1_HOST} DB=${!DB_HOST}" >> /home/ubuntu/deploy.log
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-mv2"
+
+  # ── MV Ingesta ────────────────────────────────────────────────
+  MVIngesta:
+    Type: AWS::EC2::Instance
+    DependsOn: MV2
+    Properties:
+      ImageId: !FindInMap [AmiByRegion, !Ref "AWS::Region", Ubuntu2404]
+      InstanceType: !Ref InstanceTypeApp
+      KeyName: !Ref KeyPairName
+      SubnetId: !Ref SubnetPrivate
+      SecurityGroupIds:
+        - !Ref SGIngesta
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 10
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          apt-get update -y
+          apt-get install -y docker.io docker-compose-plugin git python3-pip
+          usermod -aG docker ubuntu
+          systemctl enable docker
+          systemctl start docker
+
+          DB_HOST="${MVDB.PrivateIp}"
+
+          cd /home/ubuntu
+          git clone https://github.com/TU_ORG/URATE.git app
+          cd app/ops/mv-ingesta
+
+          cp .env.prod.example .env
+          sed -i "s/DB_HOST=.*/DB_HOST=${!DB_HOST}/" .env
+          sed -i "s/DOCKERHUB_USERNAME=.*/DOCKERHUB_USERNAME=${DockerHubUsername}/" .env
+          sed -i "s/AWS_ACCESS_KEY_ID=.*/AWS_ACCESS_KEY_ID=${AwsAccessKeyId}/" .env
+          sed -i "s|AWS_SECRET_ACCESS_KEY=.*|AWS_SECRET_ACCESS_KEY=${AwsSecretKey}|" .env
+          sed -i "s/S3_BUCKET=.*/S3_BUCKET=${S3BucketName}/" .env
+
+          # Seed MongoDB (requiere motor)
+          pip3 install motor
+          MONGO_URL=mongodb://${!DB_HOST}:27017 MONGO_DB=reviews_db \
+            python3 /home/ubuntu/app/ops/seeds/seed-ms3-reviews.py \
+            >> /home/ubuntu/deploy.log 2>&1 || true
+
+          # Fotos MySQL
+          apt-get install -y mysql-client
+          sleep 30
+          mysql -h ${!DB_HOST} -P 3306 -uutec_user -putec_pass_2025 \
+            academic_db < /home/ubuntu/app/ops/seeds/fotos-ms2.sql \
+            >> /home/ubuntu/deploy.log 2>&1 || true
+
+          echo "✅ MV-Ingesta lista" >> /home/ubuntu/deploy.log
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-mv-ingesta"
+
+  # ──────────────────────────────────────────────────────────────
+  # 4. APPLICATION LOAD BALANCER (interno)
+  # ──────────────────────────────────────────────────────────────
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb"
+      Scheme: internal
+      Type: application
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref SubnetPublic
+        - !Ref SubnetPublic2
+      SecurityGroups:
+        - !Ref SGALB
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-alb"
+
+  # ── 5 Target Groups ──────────────────────────────────────────
+
+  TGMsUsers:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-ms-users"
+      Protocol: HTTP
+      Port: 3001
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      Targets:
+        - Id: !Ref MV1
+          Port: 3001
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-tg-ms-users"
+
+  TGMsAcademic:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-ms-academic"
+      Protocol: HTTP
+      Port: 3002
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /actuator/health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      HealthCheckTimeoutSeconds: 10
+      Matcher:
+        HttpCode: "200"
+      Targets:
+        - Id: !Ref MV1
+          Port: 3002
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-tg-ms-academic"
+
+  TGMsReviews:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-ms-reviews"
+      Protocol: HTTP
+      Port: 3003
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      Targets:
+        - Id: !Ref MV2
+          Port: 3003
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-tg-ms-reviews"
+
+  TGMsContent:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-ms-content"
+      Protocol: HTTP
+      Port: 3004
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      Targets:
+        - Id: !Ref MV2
+          Port: 3004
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-tg-ms-content"
+
+  TGMsAnalytics:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-ms-analytics"
+      Protocol: HTTP
+      Port: 3005
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200"
+      Targets:
+        - Id: !Ref MV2
+          Port: 3005
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-tg-ms-analytics"
+
+  # ── Listener HTTP:80 con 5 reglas path-based ─────────────────
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: "404"
+            ContentType: application/json
+            MessageBody: '{"error":"ruta no encontrada"}'
+
+  # Regla 1 — /api/users/* → ms-users
+  RuleUsers:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          Values: ["/api/users*"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TGMsUsers
+
+  # Regla 2 — /api/academic/* → ms-academic
+  RuleAcademic:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 20
+      Conditions:
+        - Field: path-pattern
+          Values: ["/api/academic*"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TGMsAcademic
+
+  # Regla 3 — /api/reviews/* → ms-reviews
+  RuleReviews:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 30
+      Conditions:
+        - Field: path-pattern
+          Values: ["/api/reviews*"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TGMsReviews
+
+  # Regla 4 — /api/content/* → ms-content
+  RuleContent:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 40
+      Conditions:
+        - Field: path-pattern
+          Values: ["/api/content*"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TGMsContent
+
+  # Regla 5 — /api/analytics/* → ms-analytics
+  RuleAnalytics:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref ALBListener
+      Priority: 50
+      Conditions:
+        - Field: path-pattern
+          Values: ["/api/analytics*"]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TGMsAnalytics
+
+  # ──────────────────────────────────────────────────────────────
+  # 5. API GATEWAY HTTP + VPC LINK
+  # ──────────────────────────────────────────────────────────────
+
+  VPCLink:
+    Type: AWS::ApiGatewayV2::VpcLink
+    Properties:
+      Name: !Sub "${ProjectName}-vpc-link"
+      SubnetIds:
+        - !Ref SubnetPublic
+        - !Ref SubnetPublic2
+      SecurityGroupIds:
+        - !Ref SGALB
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${ProjectName}-api"
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowMethods: [GET, POST, PUT, DELETE, OPTIONS]
+        AllowHeaders: [Content-Type, Authorization]
+        MaxAge: 3600
+
+  # Integración única al ALB (proxy total — el path lo discrimina el ALB)
+  IntegrationALB:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: ANY
+      IntegrationUri: !GetAtt ALBListener.ListenerArn
+      ConnectionType: VPC_LINK
+      ConnectionId: !Ref VPCLink
+      PayloadFormatVersion: "1.0"
+
+  # Ruta catch-all — el ALB hace el path-routing interno
+  RouteProxy:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "ANY /{proxy+}"
+      Target: !Sub "integrations/${IntegrationALB}"
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: "$default"
+      AutoDeploy: true
+
+  # ──────────────────────────────────────────────────────────────
+  # 6. S3 BUCKET + GLUE DATABASE
+  # ──────────────────────────────────────────────────────────────
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Suspended
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-analytics"
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref AthenaDatabase
+        Description: !Sub "Catálogo de datos UTECRate — generado por ${ProjectName}"
+
+  # ──────────────────────────────────────────────────────────────
+  # 7. IAM — rol y política para Glue + Athena + S3
+  # ──────────────────────────────────────────────────────────────
+
+  IamPolicyS3Athena:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub "${ProjectName}-s3-athena-policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:DeleteObject
+            Resource:
+              - !GetAtt S3Bucket.Arn
+              - !Sub "${S3Bucket.Arn}/*"
+          - Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - athena:StopQueryExecution
+              - athena:ListQueryExecutions
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - glue:GetTable
+              - glue:GetTables
+              - glue:GetDatabase
+              - glue:GetDatabases
+              - glue:GetPartition
+              - glue:GetPartitions
+              - glue:CreateTable
+              - glue:UpdateTable
+            Resource: "*"
+
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-glue-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+        - !Ref IamPolicyS3Athena
+
+# ================================================================
+# OUTPUTS — valores útiles después del deploy
+# ================================================================
+Outputs:
+
+  VPCId:
+    Description: ID de la VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${ProjectName}-vpc-id"
+
+  IpMVDB:
+    Description: IP privada de MV Base de Datos
+    Value: !GetAtt MVDB.PrivateIp
+
+  IpMV1:
+    Description: IP privada de MV1 (ms-users + ms-academic)
+    Value: !GetAtt MV1.PrivateIp
+
+  IpMV2:
+    Description: IP privada de MV2 (ms-reviews + ms-content + ms-analytics)
+    Value: !GetAtt MV2.PrivateIp
+
+  IpMVIngesta:
+    Description: IP privada de MV Ingesta
+    Value: !GetAtt MVIngesta.PrivateIp
+
+  ALBDnsName:
+    Description: DNS interno del Application Load Balancer
+    Value: !GetAtt ALB.DNSName
+
+  ApiGatewayUrl:
+    Description: URL pública HTTPS del API Gateway (usar en el frontend y Amplify)
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+
+  S3BucketArn:
+    Description: ARN del bucket S3 de analytics
+    Value: !GetAtt S3Bucket.Arn
+
+  GlueRoleArn:
+    Description: ARN del rol IAM para Glue Crawler
+    Value: !GetAtt GlueRole.Arn
+
+  FrontendEnvVars:
+    Description: Variables de entorno para pegar en AWS Amplify
+    Value: !Sub |
+      VITE_MS1_URL = https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/api/users
+      VITE_MS2_URL = https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/api/academic
+      VITE_MS3_URL = https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/api/reviews
+      VITE_MS4_URL = https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/api/content
+      VITE_MS5_URL = https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/api/analytics
